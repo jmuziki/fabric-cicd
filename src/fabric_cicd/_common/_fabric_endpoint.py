@@ -37,11 +37,11 @@ class FabricEndpoint:
         :param files: The file path to be included in the request. Defaults to None.
         :return: A dictionary containing the response headers, body, and status code.
         """
-        exit_loop = False
-        iteration_count = 0
+        max_retries = 5
+        base_delay = 0.5
         long_running = False
 
-        while not exit_loop:
+        for attempt in range(max_retries):
             try:
                 if files is None:
                     headers = {
@@ -53,8 +53,6 @@ class FabricEndpoint:
                 else:
                     headers = {"Authorization": f"Bearer {self.aad_token}"}
                     response = requests.request(method=method, url=url, headers=headers, files=files)
-
-                iteration_count += 1
 
                 invoke_log_message = _format_invoke_log(response, method, url, body)
 
@@ -70,25 +68,25 @@ class FabricEndpoint:
                         status = response_json.get("status")
                         if status == "Succeeded":
                             long_running = False
-                            exit_loop = True
-                        elif status == "Failed":
+                            break
+                        if status == "Failed":
                             response_error = response_json["error"]
                             msg = f"Operation failed. Error Code: {response_error['errorCode']}. Error Message: {response_error['message']}"
                             raise Exception(msg)
-                        elif status == "Undefined":
+                        if status == "Undefined":
                             msg = f"Operation is in an undefined state. Full Body: {response_json}"
                             raise Exception(msg)
-                        else:
-                            retry_after = float(response.headers.get("Retry-After", 0.5))
-                            logger.info(f"Operation in progress. Checking again in {retry_after} seconds.")
-                            time.sleep(retry_after)
+                        retry_after = float(response.headers.get("Retry-After", base_delay))
+                        delay = min(retry_after, base_delay * (2**attempt))
+                        logger.info(f"Operation in progress. Checking again in {delay} seconds.")
+                        time.sleep(delay)
                     else:
                         time.sleep(1)
                         long_running = True
 
                 # Handle successful responses
                 elif response.status_code in {200, 201}:
-                    exit_loop = True
+                    break
 
                 # Handle API throttling
                 elif response.status_code == 429:
@@ -115,11 +113,11 @@ class FabricEndpoint:
                     response.status_code == 400
                     and response.headers.get("x-ms-public-api-error-code") == "ItemDisplayNameAlreadyInUse"
                 ):
-                    if iteration_count <= 6:
+                    if attempt < max_retries - 1:
                         logger.info("Item name is reserved. Retrying in 60 seconds.")
                         time.sleep(60)
                     else:
-                        msg = f"Item name still in use after 6 attempts. Description: {response.reason}"
+                        msg = f"Item name still in use after 5 attempts. Description: {response.reason}"
                         raise Exception(msg)
 
                 # Handle scenario where library removed from environment before being removed from repo
@@ -135,7 +133,7 @@ class FabricEndpoint:
                     and response.headers.get("x-ms-public-api-error-code") == "EnvironmentLibrariesNotFound"
                 ):
                     logger.info("Live environment doesnt have any libraries, continuing")
-                    exit_loop = True
+                    break
 
                 # Handle unsupported principal type
                 elif (
