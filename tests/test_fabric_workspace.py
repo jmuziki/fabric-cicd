@@ -40,6 +40,14 @@ def utf8_test_chars():
     return {"nordic": "Ö æ ø", "european": "ñ é ü ß ç", "asian": "你好", "mixed": "ñ é ü ß ç 你好"}
 
 
+@pytest.fixture
+def mock_workspace():
+    workspace = FabricWorkspace(workspace_id="test-workspace", repository_directory="/mock/repo", item_type_in_scope=[])
+    workspace.repository_folders = {"/Folder1": "", "/Folder1/SubFolder1": "", "/Folder2": ""}
+    workspace.deployed_folders = {}
+    return workspace
+
+
 def create_parameter_file(dir_path, utf8_chars):
     """Create a parameter file with UTF-8 characters."""
     parameter_file_path = dir_path / "parameter.yml"
@@ -167,3 +175,40 @@ def test_environment_param_with_utf8_chars(
         )
 
     assert workspace.environment == utf8_test_chars["nordic"]
+
+
+def test_publish_folders(mock_workspace):
+    with patch.object(mock_workspace.endpoint, "invoke", return_value={"body": {"id": "mock-id"}}) as mock_invoke:
+        mock_workspace._publish_folders()
+
+        # Verify API calls for each folder
+        assert mock_invoke.call_count == 3
+        mock_invoke.assert_any_call(
+            method="POST", url=f"{mock_workspace.base_api_url}/folders", body={"displayName": "Folder1"}
+        )
+        mock_invoke.assert_any_call(
+            method="POST",
+            url=f"{mock_workspace.base_api_url}/folders",
+            body={"displayName": "SubFolder1", "parentFolderId": "mock-id"},
+        )
+        mock_invoke.assert_any_call(
+            method="POST", url=f"{mock_workspace.base_api_url}/folders", body={"displayName": "Folder2"}
+        )
+
+
+def test_unpublish_folders(mock_workspace):
+    mock_workspace.deployed_folders = {
+        "/Folder1": "id-folder1",
+        "/Folder1/SubFolder1": "id-subfolder1",
+        "/Folder2": "id-folder2",
+    }
+    mock_workspace.deployed_items = {}
+
+    with patch.object(mock_workspace.endpoint, "invoke", return_value=None) as mock_invoke:
+        mock_workspace._unpublish_folders()
+
+        # Verify API calls for each folder
+        assert mock_invoke.call_count == 3
+        mock_invoke.assert_any_call(method="DELETE", url=f"{mock_workspace.base_api_url}/folders/id-subfolder1")
+        mock_invoke.assert_any_call(method="DELETE", url=f"{mock_workspace.base_api_url}/folders/id-folder1")
+        mock_invoke.assert_any_call(method="DELETE", url=f"{mock_workspace.base_api_url}/folders/id-folder2")
